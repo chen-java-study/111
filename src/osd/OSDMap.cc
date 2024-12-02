@@ -2622,7 +2622,8 @@ int OSDMap::map_to_pg(
   *pg = pg_t(ps, poolid);
   return 0;
 }
-
+/*OSDMap::object_locator_to_pg 函数在 Ceph 中用于根据对象定位符（object_locator_t）
+和对象 ID（object_t）将对象映射到 Placement Group (PG)。该函数的作用是在 Ceph 集群中根据对象的定位信息（如哈希值、池、命名空间等）计算出该对象所在的 PG*/
 int OSDMap::object_locator_to_pg(
   const object_t& oid, const object_locator_t& loc, pg_t &pg) const
 {
@@ -2633,6 +2634,7 @@ int OSDMap::object_locator_to_pg(
     pg = pg_t(loc.hash, loc.get_pool());
     return 0;
   }
+  //函数会根据对象的 oid（对象ID），namespace（命名空间），key 等信息来调用 CRUSH 算法，从而将对象映射到一个 Placement Group（PG）
   return map_to_pg(loc.get_pool(), oid.name, loc.key, loc.nspace, &pg);
 }
 

@@ -2293,20 +2293,27 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
   op->trace.event("op submit");
   _op_submit_with_budget(op, rl, ptid, ctx_budget);
 }
-
+/**
+ * 在提交操作时处理预算限制
+ * @param op 操作对象指针
+ * @param sul 共享互斥锁的唯一锁
+ * @param ptid 操作 ID 的指针
+ * @param ctx_budget 上下文预算的指针
+ */
 void Objecter::_op_submit_with_budget(Op *op,
 				      shunique_lock<ceph::shared_mutex>& sul,
 				      ceph_tid_t *ptid,
 				      int *ctx_budget)
 {
   ceph_assert(initialized);
-
+/*这些断言确保了对象初始化完成，并且操作对象的相关数据结构（如 ops、out_bl、out_rval、out_handler）的大小一致。*/
   ceph_assert(op->ops.size() == op->out_bl.size());
   ceph_assert(op->ops.size() == op->out_rval.size());
   ceph_assert(op->ops.size() == op->out_handler.size());
 
   // throttle.  before we look at any state, because
   // _take_op_budget() may drop our lock while it blocks.
+  /*这段代码检查操作是否已经预算，如果没有或者上下文预算为 -1，则调用 _take_op_budget 方法获取操作预算，并将其分配给操作和上下文预算（如果存在）。*/
   if (!op->ctx_budgeted || (ctx_budget && (*ctx_budget == -1))) {
     int op_budget = _take_op_budget(op, sul);
     // take and pass out the budget for the first OP
@@ -2315,7 +2322,7 @@ void Objecter::_op_submit_with_budget(Op *op,
       *ctx_budget = op_budget;
     }
   }
-
+/*如果设置了 OSD 超时时间，这段代码会为操作设置一个超时事件，当操作超时时，会调用 op_cancel 方法取消操作。*/
   if (osd_timeout > timespan(0)) {
     if (op->tid == 0)
       op->tid = ++last_tid;
@@ -2402,7 +2409,12 @@ void Objecter::_send_op_account(Op *op)
       logger->inc(code);
   }
 }
-
+/**
+ * 提交操作到目标 OSD
+ * @param op 操作对象指针
+ * @param sul 共享互斥锁的唯一锁
+ * @param ppid 操作 ID 的指针
+ */
 void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_tid_t *ptid)
 {
   // rwlock is locked
@@ -2412,9 +2424,12 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
   // pick target
   ceph_assert(op->session == NULL);
   OSDSession *s = NULL;
+/*调用 _calc_target 函数来计算操作的目标。目标的计算涉及到 OSD 的选择、PG 的计算等。根据返回值，决定后续的处理流程。
 
+如果返回值为 RECALC_OP_TARGET_POOL_DNE（表示池不存在），则需要重新检查是否有最新的 OSD Map (check_for_latest_map = true)。
+如果返回值为 RECALC_OP_TARGET_POOL_EIO（表示池出现 I/O 错误），则执行操作的完成回调并返回。*/
   bool check_for_latest_map = false;
-  int r = _calc_target(&op->target, nullptr);
+  int r = _calc_target(&op->target, nullptr);//这里计算osd
   switch(r) {
   case RECALC_OP_TARGET_POOL_DNE:
     check_for_latest_map = true;
@@ -2427,6 +2442,9 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
   }
 
   // Try to get a session, including a retry if we need to take write lock
+  /*调用 _get_session 函数获取与目标 OSD 相关的会话。如果会话获取失败（返回 -EAGAIN），
+  或者在获取会话时需要重试，则会释放共享锁，休眠一段时间后重新获取锁，
+  并检查 OSD Map 是否发生了变化。如果 OSD Map 变化了，则重新计算目标。*/
   r = _get_session(op->target.osd, &s, sul);
   if (r == -EAGAIN ||
       (check_for_latest_map && sul.owns_lock_shared()) ||
@@ -2441,7 +2459,7 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
       // map changed; recalculate mapping
       ldout(cct, 10) << __func__ << " relock raced with osdmap, recalc target"
 		     << dendl;
-      check_for_latest_map = _calc_target(&op->target, nullptr)
+      check_for_latest_map = _calc_target(&op->target, nullptr)//重新计算
 	== RECALC_OP_TARGET_POOL_DNE;
       if (s) {
 	put_session(s);
@@ -2450,19 +2468,22 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
       }
     }
   }
+  //如果会话获取失败且重试后依然失败（r == -EAGAIN），则继续获取会话。最终，如果获取会话成功，则会进行 ceph_assert 来确保会话对象不为空。
   if (r == -EAGAIN) {
     ceph_assert(s == NULL);
     r = _get_session(op->target.osd, &s, sul);
   }
   ceph_assert(r == 0);
   ceph_assert(s);  // may be homeless
-
+//调用 _send_op_account 来记录操作的统计信息。
   _send_op_account(op);
 
   // send?
 
   ceph_assert(op->target.flags & (CEPH_OSD_FLAG_READ|CEPH_OSD_FLAG_WRITE));
-
+//判断操作是否需要发送。如果操作的目标被暂停，则通过 _maybe_request_map 可能请求更新 OSD Map。
+//如果会话不是“无主”（is_homeless() 为 false），则设置 need_send 为 true，表示操作需要发送；
+//否则，同样通过 _maybe_request_map 请求 OSD Map 更新。
   bool need_send = false;
   if (op->target.paused) {
     ldout(cct, 10) << " tid " << op->tid << " op " << op << " is paused"
@@ -2473,7 +2494,7 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
   } else {
     _maybe_request_map();
   }
-
+//获取会话锁（s->lock），并分配一个新的事务 ID (tid) 给操作对象。之后，记录当前操作的日志信息，并将操作分配给会话 (_session_op_assign)。
   unique_lock sl(s->lock);
   if (op->tid == 0)
     op->tid = ++last_tid;
@@ -2485,13 +2506,14 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
 		 << dendl;
 
   _session_op_assign(s, op);
-
+//如果需要发送操作，则调用 _send_op 发送该操作。
   if (need_send) {
     _send_op(op);
   }
 
   // Last chance to touch Op here, after giving up session lock it can
   // be freed at any time by response handler.
+  //如果需要检查最新的 OSD Map，则调用 _send_op_map_check 来进行检查。如果 ptid 不为空，则将当前操作的事务 ID 返回给调用者。将操作对象 op 设置为 NULL，以防止其被意外使用。
   ceph_tid_t tid = op->tid;
   if (check_for_latest_map) {
     _send_op_map_check(op);
@@ -2794,13 +2816,15 @@ void Objecter::_prune_snapc(
     }
   }
 }
-
+/*op_target_t *t: 目标操作的结构体，包含了当前操作的所有信息，包括标志位、对象定位信息、PG 等。
+Connection *con: 连接对象，未在此函数内部使用，但通常是与其他函数或操作进行网络通信的上下文。
+bool any_change: 标记是否有任何变化的布尔值，用于控制是否触发某些特定的处理流程（如重发）。*/
 int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 {
-  // rwlock is locked
+  // rwlock is locked//根据 t->flags 来判断当前操作是否是读取（is_read）或写入（is_write）操作。
   bool is_read = t->flags & CEPH_OSD_FLAG_READ;
   bool is_write = t->flags & CEPH_OSD_FLAG_WRITE;
-  t->epoch = osdmap->get_epoch();
+  t->epoch = osdmap->get_epoch();//获取当前的 OSD map epoch，并打印当前操作的一些基础信息，包括对象标识（OID）、目标位置（OLoc）、PGID 等
   ldout(cct,20) << __func__ << " epoch " << t->epoch
 		<< " base " << t->base_oid << " " << t->base_oloc
 		<< " precalc_pgid " << (int)t->precalc_pgid
@@ -2808,7 +2832,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 		<< (is_read ? " is_read" : "")
 		<< (is_write ? " is_write" : "")
 		<< dendl;
-
+//通过 t->base_oloc.pool 获取 PG Pool，如果找不到对应的 pool，则返回一个标志（RECALC_OP_TARGET_POOL_DNE），并将 OSD 设置为 -1。
   const pg_pool_t *pi = osdmap->get_pg_pool(t->base_oloc.pool);
   if (!pi) {
     t->osd = -1;
@@ -2821,7 +2845,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 
   ldout(cct,30) << __func__ << "  base pi " << pi
 		<< " pg_num " << pi->get_pg_num() << dendl;
-
+//判断是否需要强制重发操作。如果当前 epoch 和 last_force_op_resend 相同，且 last_force_resend 发生变化，则设置 force_resend 为 true
   bool force_resend = false;
   if (osdmap->get_epoch() == pi->last_force_op_resend) {
     if (t->last_force_resend < pi->last_force_op_resend) {
@@ -2831,7 +2855,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
       force_resend = true;
     }
   }
-
+//根据操作类型（读/写）应用适当的存储层次。若 t->flags 中没有 IGNORE_OVERLAY 标志，则应用 read_tier 或 write_tier。如果层次处理后找不到新的 PG Pool，返回 RECALC_OP_TARGET_POOL_DNE
   // apply tiering
   t->target_oid = t->base_oid;
   t->target_oloc = t->base_oloc;
@@ -2846,7 +2870,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
       return RECALC_OP_TARGET_POOL_DNE;
     }
   }
-
+//如果 precalc_pgid 存在，则使用该 PGID。如果没有，尝试从 osdmap 中根据目标 OID 和 OLoc 计算 PGID。如果计算失败（如返回 -ENOENT），则返回错误。
   pg_t pgid;
   if (t->precalc_pgid) {
     ceph_assert(t->flags & CEPH_OSD_FLAG_IGNORE_OVERLAY);
@@ -2854,6 +2878,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
     ceph_assert(t->base_oloc.pool == (int64_t)t->base_pgid.pool());
     pgid = t->base_pgid;
   } else {
+    //计算目标 PG
     int ret = osdmap->object_locator_to_pg(t->target_oid, t->target_oloc,
 					   pgid);
     if (ret == -ENOENT) {
@@ -2876,18 +2901,25 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   vector<int> up, acting;
   ps_t actual_ps = ceph_stable_mod(pgid.ps(), pg_num, pg_num_mask);
   pg_t actual_pgid(actual_ps, pgid.pool());
+  //首先检查是否能通过 actual_pgid 和 osdmap 的当前 epoch 找到 PG 的映射信息。如果找不到，则执行大括号内的代码块
   if (!lookup_pg_mapping(actual_pgid, osdmap->get_epoch(), &up, &up_primary,
                          &acting, &acting_primary)) {
+                            //如果找不到映射信息，则通过 osdmap 的 pg_to_up_acting_osds 方法获取 PG 的 up set 和 acting set 以及它们的 primary。
     osdmap->pg_to_up_acting_osds(actual_pgid, &up, &up_primary,
                                  &acting, &acting_primary);
+    //创建一个 pg_mapping_t 对象，包含了从 osdmap 中获取的 PG 映射信息。
     pg_mapping_t pg_mapping(osdmap->get_epoch(),
                             up, up_primary, acting, acting_primary);
+    //更新 PG 的映射信息。
     update_pg_mapping(actual_pgid, std::move(pg_mapping));
   }
+  //检查 osdmap 是否设置了 CEPH_OSDMAP_SORTBITWISE 和 CEPH_OSDMAP_RECOVERY_DELETES 标志。
   bool sort_bitwise = osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE);
   bool recovery_deletes = osdmap->test_flag(CEPH_OSDMAP_RECOVERY_DELETES);
+  //计算前一个 PG 的 ID。
   unsigned prev_seed = ceph_stable_mod(pgid.ps(), t->pg_num, t->pg_num_mask);
   pg_t prev_pgid(prev_seed, pgid.pool());
+  //如果检测到 PG 的状态有任何变化，并且这些变化构成了一个新的时间间隔，则设置 force_resend 为 true。
   if (any_change && PastIntervals::is_new_interval(
 	t->acting_primary,
 	acting_primary,
@@ -2920,18 +2952,19 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 	prev_pgid)) {
     force_resend = true;
   }
-
+//检查 PG 是否应该被暂停，并根据需要设置 unpaused 标志。
   bool unpaused = false;
   bool should_be_paused = target_should_be_paused(t);
   if (t->paused && !should_be_paused) {
     unpaused = true;
   }
+  //如果 PG 的暂停状态与应该的状态不同，则更新 PG 的暂停状态。
   if (t->paused != should_be_paused) {
     ldout(cct, 10) << __func__ << " paused " << t->paused
 		   << " -> " << should_be_paused << dendl;
     t->paused = should_be_paused;
   }
-
+//检查 PG 是否发生了传统的变化（如 PG ID、acting set 等的变化），以及是否发生了分裂或合并。
   bool legacy_change =
     t->pgid != pgid ||
       is_pg_changed(
@@ -2944,7 +2977,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
       prev_pgid.is_merge_source(t->pg_num, pg_num, nullptr) ||
       prev_pgid.is_merge_target(t->pg_num, pg_num);
   }
-
+//如果发生了传统变化、分裂或合并，或者需要强制重发，则更新 PG 的状态和相关信息。
   if (legacy_change || split_or_merge || force_resend) {
     t->pgid = pgid;
     t->acting = std::move(acting);
@@ -3018,9 +3051,11 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
       t->osd = acting_primary;
     }
   }
+  //如果发生了传统变化、PG 被暂停或需要强制重发，则返回 RECALC_OP_TARGET_NEED_RESEND。
   if (legacy_change || unpaused || force_resend) {
     return RECALC_OP_TARGET_NEED_RESEND;
   }
+  //如果发生了分裂或合并，并且 osdmap 的要求版本大于等于 luminous，则执行相应的操作。
   if (split_or_merge &&
       (osdmap->require_osd_release >= ceph_release_t::luminous ||
        HAVE_FEATURE(osdmap->get_xinfo(acting_primary).features,

@@ -222,11 +222,11 @@ int librados::RadosClient::connect()
   if (state == CONNECTED)
     return -EISCONN;
   state = CONNECTING;
-
+//如果日志系统尚未启动，则启动它。
   if (!cct->_log->is_started()) {
     cct->_log->start();
   }
-
+//创建一个临时的 MonClient 对象 mc_bootstrap，用于获取监视器映射和配置信息。
   {
     MonClient mc_bootstrap(cct, poolctx);
     err = mc_bootstrap.get_monmap_and_config();
@@ -238,12 +238,13 @@ int librados::RadosClient::connect()
 
   poolctx.start(cct->_conf.get_val<std::uint64_t>("librados_thread_count"));
 
-  // get monmap
+  // get monmap调用 get_monmap_and_config 方法获取监视器映射和配置信息
   err = monclient.build_initial_monmap();
   if (err < 0)
     goto out;
 
   err = -ENOMEM;
+  //创建一个新的 Messenger 对象 messenger，用于与其他节点进行通信。
   messenger = Messenger::create_client_messenger(cct, "radosclient");
   if (!messenger)
     goto out;
@@ -256,15 +257,17 @@ int librados::RadosClient::connect()
   ldout(cct, 1) << "starting msgr at " << messenger->get_myaddrs() << dendl;
 
   ldout(cct, 1) << "starting objecter" << dendl;
-
+    //创建一个 Objecter 对象
   objecter = new (std::nothrow) Objecter(cct, messenger, &monclient, poolctx);
   if (!objecter)
     goto out;
+//设置对象管理器的预算为平衡状态。
   objecter->set_balanced_budget();
-
+// 初始化监视器客户端 monclient。
   monclient.set_messenger(messenger);
+  //创建一个 MgrClient 对象 mgrclient，用于与管理器进行通信。
   mgrclient.set_messenger(messenger);
-
+//初始化对象管理器。
   objecter->init();
   messenger->add_dispatcher_head(&mgrclient);
   messenger->add_dispatcher_tail(objecter);
