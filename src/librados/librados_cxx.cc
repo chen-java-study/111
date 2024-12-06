@@ -466,10 +466,10 @@ void librados::ObjectWriteOperation::create(bool exclusive,
 
 void librados::ObjectWriteOperation::write(uint64_t off, const bufferlist& bl)
 {
-  ceph_assert(impl);
-  ::ObjectOperation *o = &impl->o;
-  bufferlist c = bl;
-  o->write(off, c);
+  ceph_assert(impl);// 确保 impl 指针有效，防止空指针错误,原型是 ObjectOperationImpl* impl;
+  ::ObjectOperation *o = &impl->o;// 获取 ObjectOperation 对象
+  bufferlist c = bl;// 创建 bufferlist c 作为 bl 的副本
+  o->write(off, c);// 调用 ObjectOperation 的 write 方法执行实际的写操作调用的是Objecter.h write(uint64_t off, ceph::buffer::list& bl)
 }
 
 void librados::ObjectWriteOperation::write_full(const bufferlist& bl)

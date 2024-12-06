@@ -2283,7 +2283,9 @@ void Objecter::resend_mon_ops()
 }
 
 // read | write ---------------------------
-
+/*op：一个 Op * 类型的指针，指向一个 Op 对象，该对象封装了要执行的操作。
+ptid：一个 ceph_tid_t * 类型的指针，指向一个 ceph_tid_t 类型的变量，该变量将存储操作的事务 ID。如果这个指针为 nullptr，则函数内部会创建一个新的事务 ID。
+ctx_budget：一个 int * 类型的指针，指向一个整数变量，该变量将存储操作的上下文预算。如果这个指针为 nullptr，则函数内部不会处理上下文预算。*/
 void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
 {
   shunique_lock rl(rwlock, ceph::acquire_shared);
@@ -2291,7 +2293,7 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
   if (!ptid)
     ptid = &tid;
   op->trace.event("op submit");
-  _op_submit_with_budget(op, rl, ptid, ctx_budget);
+  _op_submit_with_budget(op, rl, ptid, ctx_budget);//该函数负责在提交操作时处理预算限制
 }
 /**
  * 在提交操作时处理预算限制
@@ -2331,7 +2333,7 @@ void Objecter::_op_submit_with_budget(Op *op,
 				    [this, tid]() {
 				      op_cancel(tid, -ETIMEDOUT); });
   }
-
+//提交是指将客户端的 I/O 请求（如读、写等）发送给集群的后端存储节点
   _op_submit(op, sul, ptid);
 }
 

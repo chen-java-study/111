@@ -655,25 +655,27 @@ int librados::IoCtxImpl::operate(const object_t& oid, ::ObjectOperation *o,
   int r;
   version_t ver;
 
-  Context *oncommit = new C_SafeCond(mylock, cond, &done, &r);
+  Context *oncommit = new C_SafeCond(mylock, cond, &done, &r);//这行代码创建一个 Context 对象 oncommit，用于在操作完成时通知调用者。
 
-  int op = o->ops[0].op.op;
+  int op = o->ops[0].op.op;//这行代码获取操作的类型。
   ldout(client->cct, 10) << ceph_osd_op_name(op) << " oid=" << oid
 			 << " nspace=" << oloc.nspace << dendl;
+             //这行代码调用 objecter 对象的 prepare_mutate_op 方法，准备一个 Objecter::Op 对象，该对象封装了要执行的操作
   Objecter::Op *objecter_op = objecter->prepare_mutate_op(
     oid, oloc,
     *o, snapc, ut,
     flags | extra_op_flags,
     oncommit, &ver, osd_reqid_t(), nullptr, otel_trace);
+    //这行代码提交 Objecter::Op 对象，开始执行操作。
   objecter->op_submit(objecter_op);
-
+    //这行代码使用互斥锁和条件变量等待操作完成。
   {
     std::unique_lock l{mylock};
     cond.wait(l, [&done] { return done;});
   }
   ldout(client->cct, 10) << "Objecter returned from "
 	<< ceph_osd_op_name(op) << " r=" << r << dendl;
-
+//这行代码设置同步操作的版本信息。
   set_sync_op_version(ver);
 
   return r;

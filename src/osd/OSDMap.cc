@@ -2616,9 +2616,9 @@ int OSDMap::map_to_pg(
     return -ENOENT;
   ps_t ps;
   if (!key.empty())
-    ps = pool->hash_key(key, nspace);
+    ps = pool->hash_key(key, nspace);//// 使用 key 和命名空间计算 ps
   else
-    ps = pool->hash_key(name, nspace);
+    ps = pool->hash_key(name, nspace);// 如果没有 key，则使用 name 和命名空间计算 ps
   *pg = pg_t(ps, poolid);
   return 0;
 }
